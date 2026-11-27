@@ -1,0 +1,115 @@
+
+name: Build VIctory AMD (Windows x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: Build profile
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - release
+          - diag
+
+  push:
+    branches:
+      - a-publier
+      - main
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.profile }}
+    runs-on: windows-2025
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [release, diag]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Check build selection
+        id: selection
+        shell: pwsh
+        run: |
+          $selected = "${{ inputs.build_type }}"
+          $profile = "${{ matrix.profile }}"
+
+          if (!$selected -or $selected -eq "both" -or $selected -eq $profile) {
+              "enabled=true" >> $env:GITHUB_OUTPUT
+          } else {
+              "enabled=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Setup Rust
+        if: steps.selection.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        if: steps.selection.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: amd-${{ matrix.profile }}
+
+      - name: Build Release
+        if: steps.selection.outputs.enabled == 'true' && matrix.profile == 'release'
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p victory
+
+      - name: Build Diagnostics
+        if: steps.selection.outputs.enabled == 'true' && matrix.profile == 'diag'
+        shell: pwsh
+        run: |
+          cargo build --locked --profile diag -p victory --features diagnostics
+
+      - name: Package binaries
+        if: steps.selection.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $profile = "${{ matrix.profile }}"
+
+          New-Item -ItemType Directory -Force "dist/target/$profile"
+
+          Copy-Item "target/$profile/victory.exe" "dist/target/$profile/"
+          Copy-Item "scripts" "dist/" -Recurse
+          Copy-Item "docs" "dist/" -Recurse
+          Copy-Item "README.md" "dist/"
+          Copy-Item "LICENSE" "dist/"
+          Copy-Item "victory.example.toml" "dist/"
+
+          if (Test-Path ".victory-root") {
+              Copy-Item ".victory-root" "dist/"
+          }
+
+          git rev-parse HEAD | Out-File "dist/BUILD_COMMIT.txt"
+
+      - name: Upload artifact
+        if: steps.selection.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: victory-amd-windows-x64-${{ matrix.profile }}
+          path: dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
